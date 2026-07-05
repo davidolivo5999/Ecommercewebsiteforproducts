@@ -1,7 +1,7 @@
 👗 Voluble Boutique
 A modern e-commerce platform for a fashion-forward clothing brand.
 
-🔗 Live Demo: volubleboutique.com
+🔗 Live Demo: [volubleboutique.com](https://volubleboutique.com)
 📐 Original Design: Figma Prototype
 
 
