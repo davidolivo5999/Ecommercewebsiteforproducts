@@ -5,6 +5,7 @@ import { Shop } from "./components/Shop";
 import { ProductDetail } from "./components/ProductDetail";
 import { Cart } from "./components/Cart";
 import { Checkout } from "./components/Checkout";
+import { OrderComplete } from "./components/OrderComplete";
 import { Admin } from "./components/Admin";
 import { ProductsProvider } from "./context/ProductsContext";
 
@@ -26,6 +27,7 @@ export const router = createBrowserRouter([
       { path: "product/:id", Component: ProductDetail },
       { path: "cart", Component: Cart },
       { path: "checkout", Component: Checkout },
+      { path: "order-complete", Component: OrderComplete },
     ],
   },
   { path: "/admin", Component: AdminPage },
