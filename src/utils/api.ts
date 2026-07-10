@@ -92,3 +92,22 @@ export const uploadImageDataUrl = async (
   const data = await res.json();
   return data.url;
 };
+// ── Square checkout ──────────────────────────────────────────────────────────
+
+export interface CheckoutItem {
+  id: string;
+  quantity: number;
+  size?: string;
+  color?: string;
+}
+
+export const createCheckout = async (items: CheckoutItem[]): Promise<string> => {
+  const res = await fetch(`${API_BASE}/create-checkout`, {
+    method: "POST",
+    headers: baseHeaders(),
+    body: JSON.stringify({ items }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? "Could not start checkout");
+  return data.url;
+};
