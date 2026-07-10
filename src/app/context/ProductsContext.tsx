@@ -1,28 +1,24 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 import { products as staticProducts } from "../data/products";
-import {
-  getCustomProducts, getOverrides, getHidden,
-  saveCustomProducts, setOverride, clearOverride, hideProduct,
-  StoredProduct,
-} from "@/utils/localStore";
+import { StoredProduct } from "@/utils/localStore";
+import { CatalogState, emptyState, fetchCatalogState, saveCatalogState } from "@/utils/api";
 import { Product } from "../types";
 
 interface ProductsContextType {
   products: Product[];
   allStoredProducts: StoredProduct[];
+  loading: boolean;
   refresh: () => void;
-  addProduct: (p: Omit<StoredProduct, "id" | "isCustom">) => void;
-  updateProduct: (id: string, changes: Partial<StoredProduct>) => void;
-  removeProduct: (id: string) => void;
+  addProduct: (p: Omit<StoredProduct, "id" | "isCustom">) => Promise<void>;
+  updateProduct: (id: string, changes: Partial<StoredProduct>) => Promise<void>;
+  removeProduct: (id: string) => Promise<void>;
 }
 
 const ProductsContext = createContext<ProductsContextType | undefined>(undefined);
 
-const buildAll = (): StoredProduct[] => {
-  const custom = getCustomProducts();
-  const overrides = getOverrides();
-  const hidden = new Set(getHidden());
-  const customIds = new Set(custom.map((p) => p.id));
+const buildAll = (state: CatalogState): StoredProduct[] => {
+  const hidden = new Set(state.hidden);
+  const customIds = new Set(state.custom.map((p) => p.id));
 
   const statics: StoredProduct[] = staticProducts
     .filter((p) => !hidden.has(p.id))
@@ -40,49 +36,80 @@ const buildAll = (): StoredProduct[] => {
       inStock: p.inStock,
       featured: p.featured ?? false,
       isCustom: false,
-      ...(overrides[p.id] ?? {}),
+      ...(state.overrides[p.id] ?? {}),
     }));
 
-  return [...custom, ...statics.filter((p) => !customIds.has(p.id))];
+  return [...state.custom, ...statics.filter((p) => !customIds.has(p.id))];
 };
 
 export function ProductsProvider({ children }: { children: ReactNode }) {
-  const [tick, setTick] = useState(0);
-  const refresh = useCallback(() => setTick((t) => t + 1), []);
+  const [state, setState] = useState<CatalogState>(emptyState());
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(() => {
+    fetchCatalogState()
+      .then(setState)
+      .catch(() => {}) // keep last known state if the fetch fails
+      .finally(() => setLoading(false));
+  }, []);
 
   useEffect(() => {
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
+    refresh();
   }, [refresh]);
 
-  const allStoredProducts = buildAll();
-
-  const addProduct = (data: Omit<StoredProduct, "id" | "isCustom">) => {
-    const existing = getCustomProducts();
-    saveCustomProducts([{ ...data, id: `custom-${Date.now()}`, isCustom: true }, ...existing]);
-    refresh();
-  };
-
-  const updateProduct = (id: string, changes: Partial<StoredProduct>) => {
-    const existing = getCustomProducts();
-    if (existing.some((p) => p.id === id)) {
-      saveCustomProducts(existing.map((p) => (p.id === id ? { ...p, ...changes } : p)));
-    } else {
-      setOverride(id, changes);
+  // Persist a new state to the server; roll back locally if the save fails.
+  const commit = async (next: CatalogState) => {
+    const prev = state;
+    setState(next);
+    try {
+      await saveCatalogState(next);
+    } catch (err) {
+      setState(prev);
+      throw err;
     }
-    refresh();
   };
 
-  const removeProduct = (id: string) => {
-    const existing = getCustomProducts();
-    if (existing.some((p) => p.id === id)) {
-      saveCustomProducts(existing.filter((p) => p.id !== id));
-      clearOverride(id);
-    } else {
-      hideProduct(id);
-    }
-    refresh();
+  const addProduct = async (data: Omit<StoredProduct, "id" | "isCustom">) => {
+    const newProduct: StoredProduct = {
+      ...data,
+      id: `custom-${Date.now()}`,
+      isCustom: true,
+    };
+    await commit({ ...state, custom: [newProduct, ...state.custom] });
   };
+
+  const updateProduct = async (id: string, changes: Partial<StoredProduct>) => {
+    if (state.custom.some((p) => p.id === id)) {
+      await commit({
+        ...state,
+        custom: state.custom.map((p) => (p.id === id ? { ...p, ...changes } : p)),
+      });
+    } else {
+      await commit({
+        ...state,
+        overrides: {
+          ...state.overrides,
+          [id]: { ...state.overrides[id], ...changes },
+        },
+      });
+    }
+  };
+
+  const removeProduct = async (id: string) => {
+    if (state.custom.some((p) => p.id === id)) {
+      const overrides = { ...state.overrides };
+      delete overrides[id];
+      await commit({
+        ...state,
+        custom: state.custom.filter((p) => p.id !== id),
+        overrides,
+      });
+    } else if (!state.hidden.includes(id)) {
+      await commit({ ...state, hidden: [...state.hidden, id] });
+    }
+  };
+
+  const allStoredProducts = buildAll(state);
 
   const products: Product[] = allStoredProducts.map((p) => ({
     ...p,
@@ -90,7 +117,9 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
   }));
 
   return (
-    <ProductsContext.Provider value={{ products, allStoredProducts, refresh, addProduct, updateProduct, removeProduct }}>
+    <ProductsContext.Provider
+      value={{ products, allStoredProducts, loading, refresh, addProduct, updateProduct, removeProduct }}
+    >
       {children}
     </ProductsContext.Provider>
   );
