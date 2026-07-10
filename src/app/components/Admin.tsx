@@ -4,8 +4,8 @@ import { useProducts } from "../context/ProductsContext";
 import { compressImage, StoredProduct } from "@/utils/localStore";
 import { Plus, Pencil, Trash2, X, Upload, ArrowLeft, Loader2, Star, EyeOff } from "lucide-react";
 import logo from "@/imports/logo.jpg";
+import { verifyAdmin, setAdminSecret, getAdminSecret, clearAdminSecret, uploadImageDataUrl } from "@/utils/api";
 
-const ADMIN_PASSWORD = "voluble2024";
 const CATEGORIES = ["Rings", "Necklaces", "Earrings", "Bracelets", "Sets", "Other"];
 
 type Form = {
@@ -29,9 +29,10 @@ const fromProduct = (p: StoredProduct): Form => ({
 export function Admin() {
   const { allStoredProducts, addProduct, updateProduct, removeProduct } = useProducts();
 
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("vb_admin") === "1");
+  const [authed, setAuthed] = useState(() => getAdminSecret() !== "");
   const [pw, setPw] = useState("");
   const [pwError, setPwError] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const [modal, setModal] = useState<null | "add" | "edit">(null);
   const [editing, setEditing] = useState<StoredProduct | null>(null);
@@ -50,9 +51,18 @@ export function Admin() {
     setTimeout(() => setToast(""), 2500);
   };
 
-  const login = () => {
-    if (pw === ADMIN_PASSWORD) { sessionStorage.setItem("vb_admin", "1"); setAuthed(true); }
-    else { setPwError(true); setPw(""); }
+  const login = async () => {
+    if (!pw || loggingIn) return;
+    setLoggingIn(true);
+    try {
+      const ok = await verifyAdmin(pw);
+      if (ok) { setAdminSecret(pw); setAuthed(true); }
+      else { setPwError(true); setPw(""); }
+    } catch {
+      setPwError(true);
+    } finally {
+      setLoggingIn(false);
+    }
   };
 
   const openAdd = () => {
@@ -78,34 +88,44 @@ export function Admin() {
     const f = e.dataTransfer.files[0]; if (f) handleFile(f);
   }, [handleFile]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
-    const data = {
-      name: form.name.trim(),
-      price: parseFloat(form.price) || 0,
-      originalPrice: form.originalPrice ? parseFloat(form.originalPrice) : undefined,
-      category: form.category,
-      description: form.description.trim(),
-      featured: form.featured,
-      inStock: form.inStock,
-      image: preview,
-      images: preview ? [preview] : [],
-      sizes: [], colors: [],
-    };
     try {
-      if (modal === "edit" && editing) { updateProduct(editing.id, data); showToast("Saved ✓"); }
-      else { addProduct(data); showToast("Product added ✓"); }
+      // If the preview is a freshly-selected image (base64 data URL), upload it
+      // to permanent storage first and use the returned URL.
+      let imageUrl = preview;
+      if (preview.startsWith("data:")) {
+        imageUrl = await uploadImageDataUrl(preview, `${form.name.trim() || "product"}.jpg`);
+      }
+      const data = {
+        name: form.name.trim(),
+        price: parseFloat(form.price) || 0,
+        originalPrice: form.originalPrice ? parseFloat(form.originalPrice) : undefined,
+        category: form.category,
+        description: form.description.trim(),
+        featured: form.featured,
+        inStock: form.inStock,
+        image: imageUrl,
+        images: imageUrl ? [imageUrl] : [],
+        sizes: [], colors: [],
+      };
+      if (modal === "edit" && editing) { await updateProduct(editing.id, data); showToast("Saved ✓"); }
+      else { await addProduct(data); showToast("Product added ✓"); }
       closeModal();
-    } catch { showToast("Something went wrong"); }
+    } catch (err: any) { showToast(err?.message ?? "Something went wrong"); }
     finally { setSaving(false); }
   };
 
-  const handleRemove = (p: StoredProduct) => {
+  const handleRemove = async (p: StoredProduct) => {
     const msg = p.isCustom ? "Delete this product?" : "Hide this product from the store?";
     if (!window.confirm(msg)) return;
-    removeProduct(p.id);
-    showToast(p.isCustom ? "Deleted" : "Hidden from store");
+    try {
+      await removeProduct(p.id);
+      showToast(p.isCustom ? "Deleted" : "Hidden from store");
+    } catch (err: any) {
+      showToast(err?.message ?? "Something went wrong");
+    }
   };
 
   // ── Login ────────────────────────────────────────────────────────────────
@@ -127,9 +147,9 @@ export function Admin() {
               className={`w-full border px-4 py-3 text-sm outline-none transition-colors bg-white ${pwError ? "border-red-500" : "border-[rgba(26,20,16,0.1)] focus:border-[#1A1410]"}`}
             />
             {pwError && <p className="text-xs text-red-600">Incorrect password.</p>}
-            <button onClick={login}
-              className="w-full bg-[#1A1410] text-white py-3 text-[10px] tracking-[0.3em] uppercase hover:bg-[#B8965A] transition-colors">
-              Sign In
+            <button onClick={login} disabled={loggingIn}
+              className="w-full bg-[#1A1410] text-white py-3 text-[10px] tracking-[0.3em] uppercase hover:bg-[#B8965A] transition-colors disabled:opacity-60">
+              {loggingIn ? "Signing in…" : "Sign In"}
             </button>
           </div>
           <p className="text-center text-xs text-[#6B6056] mt-6">
@@ -164,7 +184,7 @@ export function Admin() {
             className="flex items-center gap-2 bg-[#B8965A] text-white px-4 py-2 text-[10px] tracking-[0.2em] uppercase hover:bg-[#B8965A]/90 transition-colors">
             <Plus className="size-3.5" /> Add Product
           </button>
-          <button onClick={() => { sessionStorage.removeItem("vb_admin"); setAuthed(false); }}
+          <button onClick={() => { clearAdminSecret(); setAuthed(false); }}
             className="text-xs text-[#6B6056] hover:text-[#1A1410] transition-colors px-2">
             Sign out
           </button>
