@@ -1,82 +1,94 @@
-import { projectId } from "../../utils/supabase/info";
+import { projectId, publicAnonKey } from "../../utils/supabase/info";
+import { StoredProduct } from "@/utils/localStore";
 
-const API_BASE = `https://${projectId}.supabase.co/functions/v1/server/make-server-c0f97509`;
+const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-c0f97509`;
 
-export interface AdminProduct {
-  id: string;
-  name: string;
-  price: number;
-  originalPrice?: number;
-  description: string;
-  category: string;
-  image: string;
-  images: string[];
-  sizes: string[];
-  colors: string[];
-  inStock: boolean;
-  featured: boolean;
+const SECRET_KEY = "vb_admin_secret";
+
+export const getAdminSecret = (): string =>
+  sessionStorage.getItem(SECRET_KEY) ?? "";
+
+export const setAdminSecret = (secret: string) =>
+  sessionStorage.setItem(SECRET_KEY, secret);
+
+export const clearAdminSecret = () => sessionStorage.removeItem(SECRET_KEY);
+
+const baseHeaders = (): Record<string, string> => ({
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${publicAnonKey}`,
+});
+
+const adminHeaders = (): Record<string, string> => ({
+  ...baseHeaders(),
+  "x-admin-secret": getAdminSecret(),
+});
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export const verifyAdmin = async (password: string): Promise<boolean> => {
+  const res = await fetch(`${API_BASE}/admin/verify`, {
+    method: "POST",
+    headers: { ...baseHeaders(), "x-admin-secret": password },
+  });
+  return res.ok;
+};
+
+// ── Catalog state (custom products, overrides, hidden) ──────────────────────
+
+export interface CatalogState {
+  custom: StoredProduct[];
+  overrides: Record<string, Partial<StoredProduct>>;
+  hidden: string[];
 }
 
-export const fetchAdminProducts = async (): Promise<AdminProduct[]> => {
-  const res = await fetch(`${API_BASE}/products`);
+export const emptyState = (): CatalogState => ({
+  custom: [],
+  overrides: {},
+  hidden: [],
+});
+
+export const fetchCatalogState = async (): Promise<CatalogState> => {
+  const res = await fetch(`${API_BASE}/state`, { headers: baseHeaders() });
   if (!res.ok) throw new Error(`Server returned ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  return {
+    custom: Array.isArray(data.custom) ? data.custom : [],
+    overrides: data.overrides ?? {},
+    hidden: Array.isArray(data.hidden) ? data.hidden : [],
+  };
 };
 
-export const createProduct = async (
-  product: Omit<AdminProduct, "id" | "images" | "colors">,
-): Promise<AdminProduct> => {
-  const res = await fetch(`${API_BASE}/products`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(product),
-  });
-  if (!res.ok) throw new Error("Failed to create product");
-  return res.json();
-};
-
-export const updateProduct = async (
-  id: string,
-  product: Partial<AdminProduct>,
-): Promise<AdminProduct> => {
-  const res = await fetch(`${API_BASE}/products/${id}`, {
+export const saveCatalogState = async (
+  state: CatalogState,
+): Promise<void> => {
+  const res = await fetch(`${API_BASE}/state`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(product),
+    headers: adminHeaders(),
+    body: JSON.stringify(state),
   });
-  if (!res.ok) throw new Error("Failed to update product");
-  return res.json();
+  if (res.status === 401) throw new Error("Session expired — please sign in again");
+  if (!res.ok) throw new Error("Failed to save changes");
 };
 
-export const deleteProduct = async (id: string): Promise<void> => {
-  const res = await fetch(`${API_BASE}/products/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete product");
-};
+// ── Image upload ─────────────────────────────────────────────────────────────
+// Accepts a base64 data URL (already compressed client-side), stores it in
+// Supabase storage, and returns a permanent public URL.
 
-export const uploadImage = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/upload`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageBase64: reader.result as string,
-            fileName: file.name,
-            mimeType: file.type,
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.error ?? "Upload failed");
-        }
-        const data = await res.json();
-        resolve(data.url);
-      } catch (err) {
-        reject(err);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+export const uploadImageDataUrl = async (
+  dataUrl: string,
+  fileName: string,
+): Promise<string> => {
+  const mimeType = dataUrl.match(/^data:([^;]+);/)?.[1] ?? "image/jpeg";
+  const res = await fetch(`${API_BASE}/upload`, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify({ imageBase64: dataUrl, fileName, mimeType }),
   });
+  if (res.status === 401) throw new Error("Session expired — please sign in again");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Upload failed");
+  }
+  const data = await res.json();
+  return data.url;
+};
